@@ -131,6 +131,7 @@ soundknot-api/
     routes/sessions.ts       # /sessions/* endpoints
     routes/home.ts           # /home endpoint
     lib/supabase.ts          # Supabase admin client factory + Env type
+    lib/time.ts              # Timezone helpers (getLocalDate, getLocalYesterday, getLocalDayRange)
 ```
 
 ### Environment / Secrets
@@ -167,15 +168,20 @@ Set via `wrangler secret put <NAME>`:
 |--------|------|-------------|----------|
 | GET | `/videos` |  | `{ videos: UserVideo[] }` (ordered by added_at DESC) |
 | POST | `/videos` | `{ youtube_video_id, title?, channel?, thumbnail_url? }` | `{ video: UserVideo }` (upsert on user_id + youtube_video_id) |
+
+- POST `/videos` auto-fetches title / channel / thumbnail from YouTube oEmbed (`https://www.youtube.com/oembed?url=...&format=json`) when any of those fields is missing in the request body, so the app no longer needs to scrape metadata client-side
 | GET | `/videos/:id/sessions` |  | `{ sessions: PracticeSession[] }` |
 
 #### Sessions (all require auth)
 
 | Method | Path | Request Body | Response |
 |--------|------|-------------|----------|
-| POST | `/sessions` | `{ video_id, segment?, pass?, mastery?, accuracy?, listened_seconds? }` | `{ session: PracticeSession }` |
+| POST | `/sessions` | `{ video_id, segment?, pass?, mastery?, accuracy?, listened_seconds?, tz? }` | `{ session: PracticeSession }` |
 
-- Also updates `user_progress`: increments total_sessions, adds listened minutes, calculates streak (checks if last_session_date was yesterday to continue streak, otherwise resets to 1)
+- Validates that `video_id` belongs to the authenticated user before insert
+- Optional `tz` is an IANA timezone (e.g. `Asia/Ho_Chi_Minh`) used for streak day calculation; falls back to UTC if not provided
+- Also updates `user_progress`: increments total_sessions, adds listened minutes, calculates streak in the user's timezone (checks if last_session_date was yesterday to continue streak, same day = no change, otherwise resets to 1)
+- Extensive request/error logging for debugging session persistence
 
 #### Home (requires auth)
 
@@ -262,8 +268,8 @@ Added types:
 - `useFocusEffect` calls `homeService.fetch()` on every screen focus
 - URL submission calls `videoService.add()` to persist video, then navigates to `/listen` with `userVideoId`
 - Streak chip shows real `progress.current_streak`
-- Today card and recent knots populated from API data
-- Empty state when no sessions exist
+- Single unified "Recent videos / sessions" list rendered from `homeData.recentKnots` (replaces the previous separate "Today" featured card + "Recent knots" list)
+- Section header shows total session count; empty state when no sessions exist
 
 #### `app/listen.tsx`  Listen screen
 - Accepts `userVideoId` param alongside `videoId`
