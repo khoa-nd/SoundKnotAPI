@@ -130,8 +130,12 @@ soundknot-api/
     routes/videos.ts         # /videos/* endpoints
     routes/sessions.ts       # /sessions/* endpoints
     routes/home.ts           # /home endpoint
+    routes/ai.ts             # /ai/chat endpoint (Gemini proxy)
     lib/supabase.ts          # Supabase admin client factory + Env type
     lib/time.ts              # Timezone helpers (getLocalDate, getLocalYesterday, getLocalDayRange)
+    lib/aiSystemPrompt.ts    # Builds system prompt from video context
+    lib/gemini.ts            # Gemini REST client (text + audio inlineData)
+    lib/rateLimit.ts         # Per-user sliding-window rate limiter (in-memory)
 ```
 
 ### Environment / Secrets
@@ -143,6 +147,14 @@ Set via `wrangler secret put <NAME>`:
 | SUPABASE_URL | Supabase project URL |
 | SUPABASE_SERVICE_ROLE_KEY | Supabase service role key (admin access) |
 | SUPABASE_JWT_SECRET | JWT secret for token validation |
+| GEMINI_API_KEY | Google AI Studio key used by `/ai/chat` |
+
+Optional `[vars]` (set in `wrangler.toml`, override defaults):
+
+| Var | Default | Description |
+|-----|---------|-------------|
+| AI_RATE_LIMIT_PER_USER_PER_MINUTE | 20 | Per-user sliding window for `/ai/chat` |
+| AI_MAX_AUDIO_BYTES | 2097152 (2 MB) | Hard cap on a single voice attachment |
 
 ### Auth Middleware
 
@@ -190,6 +202,21 @@ Set via `wrangler secret put <NAME>`:
 | GET | `/home` | `{ progress, todaySessions, recentKnots, videos }` |
 
 - Runs 4 parallel queries: user_progress, today's sessions (with video join), recent 10 sessions (with video join), recent 10 videos
+
+#### AI Tutor (requires auth)
+
+| Method | Path | Request Body | Response |
+|--------|------|-------------|----------|
+| POST | `/ai/chat` | `{ provider: "gemini", model, messages: [{ role, content, audio? }], context? }` | `{ reply }` on 200, `{ error }` otherwise |
+
+- Strict provider allowlist: only `"gemini"` is accepted today (returns 400 for anything else)
+- `messages[].audio` carries voice questions: `{ base64, mimeType }`. Gemini transcribes and answers in one round-trip via `inlineData` parts
+- `context` (optional) carries `videoTitle`, `videoChannel`, `videoId`, `transcriptWindow`, `selection` — used to build the system prompt server-side; empty/null fields are skipped cleanly
+- Per-user sliding-window rate limit (default 20/min) returns 429 with a `Retry-After` header. In-memory and per-isolate (best-effort)
+- Audio cap (default 2 MB base64) returns 413
+- Upstream error mapping: Gemini 429 → 429; other Gemini 4xx/5xx, network errors, empty replies, or safety blocks → 502
+- Logs `{ user_id, provider, model, messages_length, audio_count, latency_ms, upstream_status, outcome }` per request — never logs message content, audio, or transcript
+- Spec: `specs/api-handoff-ai-chat.md`
 
 ### CORS
 
@@ -346,6 +373,7 @@ wrangler login
 wrangler secret put SUPABASE_URL
 wrangler secret put SUPABASE_SERVICE_ROLE_KEY
 wrangler secret put SUPABASE_JWT_SECRET
+wrangler secret put GEMINI_API_KEY
 wrangler deploy
 ```
 
